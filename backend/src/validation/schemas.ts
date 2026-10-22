@@ -314,6 +314,124 @@ export const extendDeadlineSchema = z
   .openapi('ExtendDeadlineRequest');
 
 // ---------------------------------------------------------------------------
+// GET /api/bounties input validation
+// ---------------------------------------------------------------------------
+
+/** Statuses accepted by the `status` filter on `GET /api/bounties`. */
+const BOUNTY_STATUS_VALUES = [
+  'open',
+  'reserved',
+  'submitted',
+  'released',
+  'refunded',
+  'expired',
+  'disputed',
+] as const;
+
+/** Fields accepted by the `sort` query parameter on `GET /api/bounties`. */
+const BOUNTY_SORT_FIELDS = ['amount', 'deadline', 'createdAt', 'status'] as const;
+
+/** Directions accepted by the `order` query parameter on `GET /api/bounties`. */
+const BOUNTY_SORT_ORDERS = ['asc', 'desc'] as const;
+
+/** Express parses `?q=` as an empty string; treat blank values as absent. */
+const emptyQueryValueToUndefined = (value: unknown): unknown =>
+  typeof value === 'string' && value.trim() === '' ? undefined : value;
+
+/** Makes a query-string schema optional while treating blank values as absent. */
+function optionalQueryValue<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess(emptyQueryValueToUndefined, schema.optional());
+}
+
+/** Coerces a non-negative reward filter to a finite number. */
+const rewardQueryValueSchema = optionalQueryValue(z.coerce.number().finite().nonnegative());
+
+/** Coerces the 1-based page number, defaulting when absent. */
+const pageQueryValueSchema = z.preprocess(
+  emptyQueryValueToUndefined,
+  z.coerce.number().int().min(1, 'page must be greater than or equal to 1.').default(1)
+);
+
+/** Coerces a page size of 1–100; the route defaults to 20 when absent. */
+const pageSizeQueryValueSchema = optionalQueryValue(z.coerce.number().int().min(1).max(100));
+
+/**
+ * Converts an ISO 8601 deadline filter to Unix seconds. The route compares it
+ * against `deadlineAt`, which is stored in seconds.
+ */
+const deadlineQueryValueSchema = z.preprocess(
+  emptyQueryValueToUndefined,
+  z
+    .string()
+    .trim()
+    .refine((value) => !Number.isNaN(new Date(value).getTime()), {
+      message: 'Must be a valid ISO 8601 date string.',
+    })
+    .transform((value) => Math.floor(new Date(value).getTime() / 1000))
+    .optional()
+);
+
+/**
+ * Query string for `GET /api/bounties`.
+ *
+ * Covers every filter, sort, and pagination parameter the route accepts and
+ * rejects unknown parameters via `.strict()`. Repeated parameters arrive as
+ * arrays and therefore fail the scalar checks instead of being silently
+ * ignored. `limit` and `pageSize` are both accepted; the route prefers
+ * `limit`, matching the documented legacy alias. Blank values are treated as
+ * absent so `?q=&page=` behaves like an unfiltered request.
+ */
+export const listBountiesQuerySchema = z
+  .object({
+    q: optionalQueryValue(z.string().trim().min(1, 'q must not be empty.')),
+    repo: optionalQueryValue(
+      z.string().trim().regex(REPO_REGEX, 'Repo must look like owner/repository.')
+    ),
+    minReward: rewardQueryValueSchema,
+    maxReward: rewardQueryValueSchema,
+    contributor: optionalQueryValue(stellarAccountSchema),
+    maintainer: optionalQueryValue(stellarAccountSchema),
+    status: optionalQueryValue(z.enum(BOUNTY_STATUS_VALUES)),
+    tokenSymbol: optionalQueryValue(
+      z
+        .string()
+        .trim()
+        .regex(TOKEN_REGEX, 'Token symbol must be 1-12 letters or numbers.')
+        .transform((symbol) => symbol.toUpperCase())
+    ),
+    sort: z.preprocess(emptyQueryValueToUndefined, z.enum(BOUNTY_SORT_FIELDS).default('createdAt')),
+    order: z.preprocess(emptyQueryValueToUndefined, z.enum(BOUNTY_SORT_ORDERS).default('desc')),
+    page: pageQueryValueSchema,
+    limit: pageSizeQueryValueSchema,
+    pageSize: pageSizeQueryValueSchema,
+    deadlineBefore: deadlineQueryValueSchema,
+    deadlineAfter: deadlineQueryValueSchema,
+  })
+  .strict()
+  .refine(
+    (query) =>
+      query.minReward === undefined ||
+      query.maxReward === undefined ||
+      query.minReward <= query.maxReward,
+    {
+      message: 'minReward must be less than or equal to maxReward.',
+      path: ['minReward'],
+    }
+  );
+
+/**
+ * Complete input for `GET /api/bounties`: no path parameters, the validated
+ * query string, and no request body.
+ */
+export const listBountiesInputSchema = z.object({
+  params: z.object({}).strict().openapi({ description: 'No path parameters expected.' }),
+  query: listBountiesQuerySchema,
+  body: z
+    .union([z.undefined(), z.null(), z.object({}).strict()])
+    .openapi({ description: 'No request body expected.' }),
+});
+
+// ---------------------------------------------------------------------------
 // Shared response schemas
 // ---------------------------------------------------------------------------
 
